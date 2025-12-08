@@ -3,7 +3,52 @@
   <ribbon>
     <tabs>
       <tab id="PLMTab" label="FreePLM">
-        <group id="PLMActionsGroup" label="Document Control">
+
+        <!-- File Operations Group -->
+        <group id="PLMFileGroup" label="File">
+          <button id="NewButton"
+                  label="New"
+                  size="large"
+                  imageMso="FileNew"
+                  onAction="NewButton_Click"
+                  screentip="New PLM Document"
+                  supertip="Create a new document in FreePLM." />
+
+          <button id="NewFromButton"
+                  label="New From"
+                  size="normal"
+                  imageMso="NewFromExistingDocument"
+                  onAction="NewFromButton_Click"
+                  screentip="New From Local File"
+                  supertip="Create a new PLM document from an existing local file." />
+
+          <button id="OpenButton"
+                  label="Open"
+                  size="large"
+                  imageMso="FileOpen"
+                  onAction="OpenButton_Click"
+                  screentip="Open PLM Document"
+                  supertip="Open an existing document from FreePLM." />
+
+          <button id="SaveButton"
+                  label="Save"
+                  size="large"
+                  imageMso="FileSave"
+                  onAction="SaveButton_Click"
+                  screentip="Save to PLM"
+                  supertip="Save current changes to FreePLM (must be checked out)." />
+
+          <button id="SaveAsButton"
+                  label="Save As"
+                  size="normal"
+                  imageMso="FileSaveAs"
+                  onAction="SaveAsButton_Click"
+                  screentip="Save As New Document"
+                  supertip="Save as a new PLM document with a new ObjectId." />
+        </group>
+
+        <!-- Document Control Group -->
+        <group id="PLMControlGroup" label="Document Control">
           <button id="CheckOutButton"
                   label="Check Out"
                   size="large"
@@ -27,16 +72,68 @@
                   onAction="CancelCheckOutButton_Click"
                   screentip="Cancel Check Out"
                   supertip="Cancel the checkout and discard changes." />
+
+          <button id="GetLatestButton"
+                  label="Get Latest"
+                  size="normal"
+                  imageMso="RefreshDocument"
+                  onAction="GetLatestButton_Click"
+                  screentip="Get Latest Version"
+                  supertip="Get the latest version without checking out (read-only)." />
+
+          <button id="NewRevisionButton"
+                  label="New Revision"
+                  size="normal"
+                  imageMso="CreateDocumentWorkspace"
+                  onAction="NewRevisionButton_Click"
+                  screentip="Create New Major Revision"
+                  supertip="Create a new major revision (A→B) from the current document." />
         </group>
 
-        <group id="PLMInfoGroup" label="Document Information">
+        <!-- Workflow Group -->
+        <group id="PLMWorkflowGroup" label="Workflow">
+          <button id="SubmitToWorkflowButton"
+                  label="Submit"
+                  size="large"
+                  imageMso="PublishToAccessServices"
+                  onAction="SubmitToWorkflowButton_Click"
+                  screentip="Submit to Workflow"
+                  supertip="Submit document and change status (InWork → Frozen → Released)." />
+
+          <button id="ChangeOwnerButton"
+                  label="Change Owner"
+                  size="normal"
+                  imageMso="PermissionChange"
+                  onAction="ChangeOwnerButton_Click"
+                  screentip="Change Owner"
+                  supertip="Transfer document ownership to another user." />
+        </group>
+
+        <!-- Information Group -->
+        <group id="PLMInfoGroup" label="Information">
           <button id="ViewPropertiesButton"
                   label="Properties"
                   size="large"
                   imageMso="Info"
                   onAction="ViewPropertiesButton_Click"
                   screentip="View Properties"
-                  supertip="View PLM document properties and metadata." />
+                  supertip="View and edit PLM document properties and metadata." />
+
+          <button id="ViewHistoryButton"
+                  label="History"
+                  size="normal"
+                  imageMso="DatasheetView"
+                  onAction="ViewHistoryButton_Click"
+                  screentip="View Revision History"
+                  supertip="View all revisions and change history." />
+
+          <button id="SearchButton"
+                  label="Search"
+                  size="normal"
+                  imageMso="FileDocumentFind"
+                  onAction="SearchButton_Click"
+                  screentip="Search Documents"
+                  supertip="Search for documents in FreePLM." />
 
           <button id="RefreshButton"
                   label="Refresh"
@@ -46,6 +143,7 @@
                   screentip="Refresh Status"
                   supertip="Refresh document status from PLM system." />
         </group>
+
       </tab>
     </tabs>
   </ribbon>

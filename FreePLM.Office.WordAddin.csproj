@@ -196,6 +196,7 @@
     <Compile Include="Models\CheckInResultDto.cs" />
     <Compile Include="Models\CheckOutDto.cs" />
     <Compile Include="Models\CheckOutResultDto.cs" />
+    <Compile Include="Models\DocumentCreateDto.cs" />
     <Compile Include="Models\DocumentReadDto.cs" />
     <Compile Include="Models\DocumentStatus.cs" />
     <Compile Include="PLMRibbon.cs" />
