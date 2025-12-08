@@ -13,10 +13,17 @@ namespace FreePLM.Office.WordAddin
     {
         private void ThisAddIn_Startup(object sender, System.EventArgs e)
         {
+            // Add-in startup code
         }
 
         private void ThisAddIn_Shutdown(object sender, System.EventArgs e)
         {
+            // Add-in shutdown code
+        }
+
+        protected override Microsoft.Office.Core.IRibbonExtensibility CreateRibbonExtensibilityObject()
+        {
+            return new PLMRibbon();
         }
 
         #region VSTO generated code
@@ -30,7 +37,7 @@ namespace FreePLM.Office.WordAddin
             this.Startup += new System.EventHandler(ThisAddIn_Startup);
             this.Shutdown += new System.EventHandler(ThisAddIn_Shutdown);
         }
-        
+
         #endregion
     }
 }

@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<customUI xmlns="http://schemas.microsoft.com/office/2009/07/customui" onLoad="Ribbon_Load">
+  <ribbon>
+    <tabs>
+      <tab id="PLMTab" label="FreePLM">
+        <group id="PLMActionsGroup" label="Document Control">
+          <button id="CheckOutButton"
+                  label="Check Out"
+                  size="large"
+                  imageMso="FileCheckOut"
+                  onAction="CheckOutButton_Click"
+                  screentip="Check Out Document"
+                  supertip="Check out this document from the PLM system to make changes." />
+
+          <button id="CheckInButton"
+                  label="Check In"
+                  size="large"
+                  imageMso="FileCheckIn"
+                  onAction="CheckInButton_Click"
+                  screentip="Check In Document"
+                  supertip="Check in your changes and create a new revision." />
+
+          <button id="CancelCheckOutButton"
+                  label="Cancel"
+                  size="normal"
+                  imageMso="Cancel"
+                  onAction="CancelCheckOutButton_Click"
+                  screentip="Cancel Check Out"
+                  supertip="Cancel the checkout and discard changes." />
+        </group>
+
+        <group id="PLMInfoGroup" label="Document Information">
+          <button id="ViewPropertiesButton"
+                  label="Properties"
+                  size="large"
+                  imageMso="Info"
+                  onAction="ViewPropertiesButton_Click"
+                  screentip="View Properties"
+                  supertip="View PLM document properties and metadata." />
+
+          <button id="RefreshButton"
+                  label="Refresh"
+                  size="normal"
+                  imageMso="Refresh"
+                  onAction="RefreshButton_Click"
+                  screentip="Refresh Status"
+                  supertip="Refresh document status from PLM system." />
+        </group>
+      </tab>
+    </tabs>
+  </ribbon>
+</customUI>
