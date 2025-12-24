@@ -144,6 +144,22 @@
                   supertip="Refresh document status from PLM system." />
         </group>
 
+        <!-- Document Status Group -->
+        <group id="PLMStatusGroup" label="Document Status">
+          <labelControl id="CheckedOutLabel"
+                        getLabel="GetCheckedOutLabel"
+                        screentip="Check-Out Status"
+                        supertip="Shows if the document is checked out and by whom." />
+          <labelControl id="RevisionLabel"
+                        getLabel="GetRevisionLabel"
+                        screentip="Current Revision"
+                        supertip="The current revision number of this document." />
+          <labelControl id="StatusLabel"
+                        getLabel="GetStatusLabel"
+                        screentip="Document Status"
+                        supertip="The workflow status of this document." />
+        </group>
+
       </tab>
     </tabs>
   </ribbon>

@@ -42,6 +42,69 @@ namespace FreePLM.Office.WordAddin
 
         #endregion
 
+        #region Dynamic Label Callbacks
+
+        public string GetObjectIdLabel(IRibbonControl control)
+        {
+            var objectId = GetObjectIdFromDocument();
+            return string.IsNullOrEmpty(objectId) ? "No PLM Document" : $"ID: {objectId}";
+        }
+
+        public string GetRevisionLabel(IRibbonControl control)
+        {
+            try
+            {
+                if (Globals.ThisAddIn.Application.Documents.Count > 0)
+                {
+                    var doc = Globals.ThisAddIn.Application.ActiveDocument;
+                    var revision = GetDocumentProperty(doc, "PLM_Revision");
+                    return string.IsNullOrEmpty(revision) ? "Revision: --" : $"Rev: {revision}";
+                }
+            }
+            catch { }
+            return "Revision: --";
+        }
+
+        public string GetStatusLabel(IRibbonControl control)
+        {
+            try
+            {
+                if (Globals.ThisAddIn.Application.Documents.Count > 0)
+                {
+                    var doc = Globals.ThisAddIn.Application.ActiveDocument;
+                    var status = GetDocumentProperty(doc, "PLM_Status");
+                    return string.IsNullOrEmpty(status) ? "Status: --" : $"Status: {status}";
+                }
+            }
+            catch { }
+            return "Status: --";
+        }
+
+        public string GetCheckedOutLabel(IRibbonControl control)
+        {
+            try
+            {
+                if (Globals.ThisAddIn.Application.Documents.Count > 0)
+                {
+                    var doc = Globals.ThisAddIn.Application.ActiveDocument;
+                    var checkedOut = GetDocumentProperty(doc, "PLM_CheckedOut");
+
+                    if (checkedOut == "true")
+                    {
+                        return "✓ Checked Out";
+                    }
+                    else if (!string.IsNullOrEmpty(checkedOut))
+                    {
+                        return "✗ Read Only";
+                    }
+                }
+            }
+            catch { }
+            return "-- Not PLM --";
+        }
+
+        #endregion
+
         #region Button Click Handlers
 
         public async void CheckOutButton_Click(IRibbonControl control)
@@ -61,40 +124,13 @@ namespace FreePLM.Office.WordAddin
 
                 // Get ObjectId from document custom property
                 var objectId = GetObjectIdFromDocument();
-
-                // Debug: Show all custom properties
                 var doc = Globals.ThisAddIn.Application.ActiveDocument;
-                var propList = "Custom Properties:\n";
-                try
-                {
-                    var properties = doc.CustomDocumentProperties;
-                    propList += $"Count: {properties.Count}\n";
-
-                    // Access by index to avoid COM casting issues (COM collections are 1-based)
-                    for (int i = 1; i <= properties.Count; i++)
-                    {
-                        try
-                        {
-                            var prop = properties[i];
-                            propList += $"{prop.Name} = {prop.Value}\n";
-                        }
-                        catch (Exception innerEx)
-                        {
-                            propList += $"[Property {i}]: Error - {innerEx.Message}\n";
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    propList += $"Error reading properties: {ex.Message}\n";
-                }
-                propList += $"\nObjectId found: '{objectId ?? "null"}'";
 
                 if (string.IsNullOrEmpty(objectId))
                 {
                     MessageBox.Show(
-                        propList + "\n\nThis document is not a PLM document.\n\nPlease open a PLM document first.",
-                        "Debug - Not a PLM Document",
+                        "This document is not a PLM document.\n\nPlease open a PLM document first.",
+                        "Not a PLM Document",
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Warning);
                     return;
@@ -146,6 +182,9 @@ namespace FreePLM.Office.WordAddin
                     _currentDocument = docInfo;
 
                     UpdateRibbonState();
+
+                    // Show status in Word status bar instead of popup
+                    Globals.ThisAddIn.Application.StatusBar = $"PLM: Document {result.ObjectId} checked out (Rev {result.Revision})";
                 }
             }
             catch (PLMApiException ex)
@@ -957,29 +996,30 @@ namespace FreePLM.Office.WordAddin
                 var filePath = Path.Combine(tempPath, openResult.FileName);
                 File.WriteAllBytes(filePath, openResult.FileContent);
 
-                // Close current document if open
+                // Check if this document is already open
+                bool alreadyOpen = false;
                 if (Globals.ThisAddIn.Application.Documents.Count > 0)
                 {
-                    var activeDoc = Globals.ThisAddIn.Application.ActiveDocument;
-                    var activeObjectId = GetDocumentProperty(activeDoc, "PLM_ObjectId");
-
-                    // Only close if it's a different document
-                    if (activeObjectId != openResult.ObjectId)
+                    foreach (Word.Document doc in Globals.ThisAddIn.Application.Documents)
                     {
-                        var result = MessageBox.Show(
-                            "Close the current document?",
-                            "Close Document",
-                            MessageBoxButtons.YesNo,
-                            MessageBoxIcon.Question);
-
-                        if (result == DialogResult.Yes)
+                        var existingObjectId = GetDocumentProperty(doc, "PLM_ObjectId");
+                        if (existingObjectId == openResult.ObjectId)
                         {
-                            activeDoc.Close(false);
+                            // Document already open, just activate it
+                            doc.Activate();
+                            alreadyOpen = true;
+                            Globals.ThisAddIn.Application.StatusBar = $"PLM: {openResult.ObjectId} is already open";
+                            break;
                         }
                     }
                 }
 
-                // Open the file in Word
+                if (alreadyOpen)
+                {
+                    return;
+                }
+
+                // Open the file in Word (alongside any other open documents)
                 var wordDoc = Globals.ThisAddIn.Application.Documents.Open(filePath);
 
                 // Store PLM properties in document
@@ -998,15 +1038,9 @@ namespace FreePLM.Office.WordAddin
                 // Update ribbon state
                 UpdateRibbonState();
 
-                MessageBox.Show(
-                    $"Document opened successfully!\n\n" +
-                    $"ObjectId: {openResult.ObjectId}\n" +
-                    $"Revision: {openResult.Revision}\n" +
-                    $"Status: {openResult.Status}\n" +
-                    $"Checked Out: {(openResult.IsCheckedOut ? $"Yes (by {openResult.CheckedOutBy})" : "No")}",
-                    "Document Opened",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Information);
+                // Show status in Word status bar instead of popup
+                var checkedOutStatus = openResult.IsCheckedOut ? $"Checked out by {openResult.CheckedOutBy}" : "Available";
+                Globals.ThisAddIn.Application.StatusBar = $"PLM: {openResult.ObjectId} Rev {openResult.Revision} - {openResult.Status} - {checkedOutStatus}";
             }
             catch (Exception ex)
             {
