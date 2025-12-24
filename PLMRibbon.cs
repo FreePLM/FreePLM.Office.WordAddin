@@ -59,40 +59,82 @@ namespace FreePLM.Office.WordAddin
                     return;
                 }
 
-                // Get ObjectId from user or document custom property
+                // Get ObjectId from document custom property
                 var objectId = GetObjectIdFromDocument();
+
+                // Debug: Show all custom properties
+                var doc = Globals.ThisAddIn.Application.ActiveDocument;
+                var propList = "Custom Properties:\n";
+                try
+                {
+                    var properties = doc.CustomDocumentProperties;
+                    propList += $"Count: {properties.Count}\n";
+
+                    // Access by index to avoid COM casting issues (COM collections are 1-based)
+                    for (int i = 1; i <= properties.Count; i++)
+                    {
+                        try
+                        {
+                            var prop = properties[i];
+                            propList += $"{prop.Name} = {prop.Value}\n";
+                        }
+                        catch (Exception innerEx)
+                        {
+                            propList += $"[Property {i}]: Error - {innerEx.Message}\n";
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    propList += $"Error reading properties: {ex.Message}\n";
+                }
+                propList += $"\nObjectId found: '{objectId ?? "null"}'";
+
                 if (string.IsNullOrEmpty(objectId))
                 {
-                    objectId = PromptForObjectId();
-                    if (string.IsNullOrEmpty(objectId)) return;
+                    MessageBox.Show(
+                        propList + "\n\nThis document is not a PLM document.\n\nPlease open a PLM document first.",
+                        "Debug - Not a PLM Document",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                    return;
                 }
 
-                // Prompt for comment
-                var comment = PromptForComment("Check Out", "Enter reason for checking out this document:");
+                // Check if already checked out locally
+                var checkedOut = GetDocumentProperty(doc, "PLM_CheckedOut");
+                if (checkedOut == "true")
+                {
+                    MessageBox.Show(
+                        "Document is already checked out.",
+                        "Already Checked Out",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                    return;
+                }
 
-                // Perform checkout
-                var result = await _apiClient.CheckOutAsync(objectId, comment);
+                // Perform checkout without prompting for comment
+                var result = await _apiClient.CheckOutAsync(objectId, "Checked out from Word Add-in");
 
                 if (result.Success)
                 {
                     // Download the file
                     var fileBytes = await _apiClient.DownloadFileAsync(result.ObjectId);
 
-                    // Save to temp location
+                    // Get document info
+                    var docInfo = await _apiClient.GetDocumentAsync(result.ObjectId);
+
+                    // Prepare file path
                     var tempPath = Path.Combine(Path.GetTempPath(), "FreePLM", result.ObjectId);
                     Directory.CreateDirectory(tempPath);
+                    var filePath = Path.Combine(tempPath, docInfo.FileName);
 
-                    var doc = await _apiClient.GetDocumentAsync(result.ObjectId);
-                    var filePath = Path.Combine(tempPath, doc.FileName);
+                    // Close current document FIRST (so file is not locked)
+                    doc.Close(false);
+
+                    // Now save checked-out file to temp location
                     File.WriteAllBytes(filePath, fileBytes);
 
-                    // Close current document if open
-                    if (Globals.ThisAddIn.Application.Documents.Count > 0)
-                    {
-                        Globals.ThisAddIn.Application.ActiveDocument.Close(false);
-                    }
-
-                    // Open the file in Word
+                    // Open the checked out file in Word
                     var wordDoc = Globals.ThisAddIn.Application.Documents.Open(filePath);
 
                     // Store ObjectId in document custom properties
@@ -101,15 +143,9 @@ namespace FreePLM.Office.WordAddin
                     SetDocumentProperty(wordDoc, "PLM_CheckedOut", "true");
 
                     _currentObjectId = result.ObjectId;
-                    _currentDocument = doc;
+                    _currentDocument = docInfo;
 
                     UpdateRibbonState();
-
-                    MessageBox.Show(
-                        $"Document checked out successfully!\n\nObjectId: {result.ObjectId}\nRevision: {result.Revision}",
-                        "Check Out Successful",
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Information);
                 }
             }
             catch (PLMApiException ex)
@@ -117,7 +153,7 @@ namespace FreePLM.Office.WordAddin
                 if (ex.IsDocumentLocked)
                 {
                     MessageBox.Show(
-                        $"Document is already checked out.\n\n{ex.Message}",
+                        $"Document is already checked out by another user.\n\n{ex.Message}",
                         "Document Locked",
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Warning);
@@ -837,16 +873,14 @@ namespace FreePLM.Office.WordAddin
         {
             try
             {
-                foreach (Microsoft.Office.Core.DocumentProperty prop in doc.CustomDocumentProperties)
-                {
-                    if (prop.Name == propertyName)
-                    {
-                        return prop.Value.ToString();
-                    }
-                }
+                // Access by name directly to avoid COM casting issues
+                var prop = doc.CustomDocumentProperties[propertyName];
+                return prop?.Value?.ToString();
             }
-            catch { }
-            return null;
+            catch
+            {
+                return null;
+            }
         }
 
         private void SetDocumentProperty(Word.Document doc, string propertyName, string value)
@@ -953,6 +987,13 @@ namespace FreePLM.Office.WordAddin
                 SetDocumentProperty(wordDoc, "PLM_Revision", openResult.Revision);
                 SetDocumentProperty(wordDoc, "PLM_CheckedOut", openResult.IsCheckedOut ? "true" : "false");
                 SetDocumentProperty(wordDoc, "PLM_Status", openResult.Status.ToString());
+
+                // Save the document to persist custom properties
+                wordDoc.Save();
+
+                // Update current document tracking
+                _currentObjectId = openResult.ObjectId;
+                _currentDocument = await _apiClient.GetDocumentAsync(openResult.ObjectId);
 
                 // Update ribbon state
                 UpdateRibbonState();
