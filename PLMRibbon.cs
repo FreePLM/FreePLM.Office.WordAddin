@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
@@ -144,7 +145,9 @@ namespace FreePLM.Office.WordAddin
         {
             try
             {
+                var doc = Globals.ThisAddIn.Application.ActiveDocument;
                 var objectId = GetObjectIdFromDocument();
+
                 if (string.IsNullOrEmpty(objectId))
                 {
                     MessageBox.Show(
@@ -155,40 +158,46 @@ namespace FreePLM.Office.WordAddin
                     return;
                 }
 
-                // Prompt for comment
-                var comment = PromptForComment("Check In", "Enter description of changes:");
-                if (string.IsNullOrEmpty(comment)) return;
+                // Get current revision
+                var currentRevision = GetDocumentProperty(doc, "PLM_Revision") ?? "A.01";
+                var fileName = doc.Name;
+                var originalPath = doc.FullName;
 
-                // Ask if major revision
-                var createMajor = MessageBox.Show(
-                    "Create a major revision?\n\nYes = Major revision (A→B)\nNo = Minor revision (.01→.02)",
-                    "Revision Type",
-                    MessageBoxButtons.YesNoCancel,
-                    MessageBoxIcon.Question);
-
-                if (createMajor == DialogResult.Cancel) return;
-
-                // Save the document
-                var doc = Globals.ThisAddIn.Application.ActiveDocument;
+                // Save the document first
                 doc.Save();
 
-                // Read file content
-                var filePath = doc.FullName;
-                var fileBytes = File.ReadAllBytes(filePath);
+                // Prepare temp location
+                var tempDir = Path.Combine(Path.GetTempPath(), "FreePLM", objectId);
+                Directory.CreateDirectory(tempDir);
+                var tempFilePath = Path.Combine(tempDir, fileName);
 
-                // Perform checkin
-                var result = await _apiClient.CheckInAsync(
-                    objectId,
-                    fileBytes,
-                    comment,
-                    createMajor == DialogResult.Yes);
+                // Check if document is already in the temp location
+                var isInTempLocation = originalPath.Equals(tempFilePath, StringComparison.OrdinalIgnoreCase);
+
+                if (!isInTempLocation)
+                {
+                    // Need to copy to temp location
+                    doc.Close(false);
+                    File.Copy(originalPath, tempFilePath, true);
+                }
+                else
+                {
+                    // File is already in temp location, but we need to close it so the dialog can read it
+                    doc.Close(false);
+                }
+
+                // Call the new UI-enabled API endpoint (document is now closed)
+                var result = await _apiClient.CheckInUIAsync(objectId, fileName, currentRevision);
+
+                if (result == null)
+                {
+                    // User cancelled in the UI - reopen the document
+                    Globals.ThisAddIn.Application.Documents.Open(tempFilePath);
+                    return;
+                }
 
                 if (result.Success)
                 {
-                    // Update document properties
-                    SetDocumentProperty(doc, "PLM_Revision", result.NewRevision);
-                    SetDocumentProperty(doc, "PLM_CheckedOut", "false");
-
                     UpdateRibbonState();
 
                     MessageBox.Show(
@@ -197,8 +206,7 @@ namespace FreePLM.Office.WordAddin
                         MessageBoxButtons.OK,
                         MessageBoxIcon.Information);
 
-                    // Close the document
-                    doc.Close(false);
+                    // Document is now checked in and stays closed
                 }
             }
             catch (PLMApiException ex)
@@ -299,15 +307,78 @@ namespace FreePLM.Office.WordAddin
             MessageBox.Show(info, "Document Properties", MessageBoxButtons.OK, MessageBoxIcon.Information);
         }
 
-        public void NewButton_Click(IRibbonControl control)
+        public async void NewButton_Click(IRibbonControl control)
         {
-            MessageBox.Show(
-                "New Document: This will create a blank Word document and register it in FreePLM.\n\n" +
-                "You'll be prompted for: Group, Role, Project, and initial comment.\n\n" +
-                "Feature coming in backend implementation!",
-                "New PLM Document",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+            try
+            {
+                // Check if service is available
+                if (!await _apiClient.IsServiceAvailableAsync())
+                {
+                    MessageBox.Show(
+                        "Cannot connect to FreePLM service.\n\nPlease ensure the FreePLM service is running on localhost:5000",
+                        "Service Unavailable",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                    return;
+                }
+
+                // Show UI dialog and create the document
+                var result = await _apiClient.CreateDocumentUIAsync();
+
+                if (result == null)
+                {
+                    // User cancelled in the UI
+                    return;
+                }
+
+                if (!result.Success)
+                {
+                    MessageBox.Show(
+                        $"Failed to create document:\n\n{result.Message}",
+                        "Error",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Error);
+                    return;
+                }
+
+                // Create a new Word document
+                var app = Globals.ThisAddIn.Application;
+                var doc = app.Documents.Add();
+
+                // Set PLM properties from API response
+                SetDocumentProperty(doc, "PLM_ObjectId", result.ObjectId);
+                SetDocumentProperty(doc, "PLM_Revision", result.Revision);
+                SetDocumentProperty(doc, "PLM_CheckedOut", "true");
+                SetDocumentProperty(doc, "PLM_Status", "Private");
+
+                // Save the document to temp location
+                var tempDir = Path.Combine(Path.GetTempPath(), "FreePLM", result.ObjectId);
+                Directory.CreateDirectory(tempDir);
+                var filePath = Path.Combine(tempDir, result.FileName);
+
+                doc.SaveAs2(filePath);
+
+                UpdateRibbonState();
+
+                MessageBox.Show(
+                    $"New PLM document created!\n\n" +
+                    $"Object ID: {result.ObjectId}\n" +
+                    $"File Name: {result.FileName}\n" +
+                    $"Revision: {result.Revision}\n\n" +
+                    $"The document is checked out and ready for editing.\n" +
+                    $"Save your changes, then use 'Check In' to create the first revision.",
+                    "Document Created",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    $"Error creating new document:\n\n{ex.Message}",
+                    "Error",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
         }
 
         public void NewFromButton_Click(IRibbonControl control)
@@ -321,15 +392,38 @@ namespace FreePLM.Office.WordAddin
                 MessageBoxIcon.Information);
         }
 
-        public void OpenButton_Click(IRibbonControl control)
+        public async void OpenButton_Click(IRibbonControl control)
         {
-            MessageBox.Show(
-                "Open: This will show a dialog to browse and open existing PLM documents.\n\n" +
-                "You can search by: ObjectId, File Name, Project, Owner, Status.\n\n" +
-                "Feature coming in backend implementation!",
-                "Open PLM Document",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+            try
+            {
+                // Check if service is available
+                if (!await _apiClient.IsServiceAvailableAsync())
+                {
+                    MessageBox.Show(
+                        "Cannot connect to FreePLM service.\n\nPlease ensure the FreePLM service is running on localhost:5000",
+                        "Service Unavailable",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                    return;
+                }
+
+                // Show WPF open dialog via the service
+                var result = await _apiClient.OpenUIAsync();
+
+                if (result != null && !string.IsNullOrEmpty(result.ObjectId))
+                {
+                    // Open the document
+                    await OpenDocumentFromPLM(result.ObjectId);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    $"Error opening document: {ex.Message}",
+                    "Error",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
         }
 
         public async void SaveButton_Click(IRibbonControl control)
@@ -347,9 +441,10 @@ namespace FreePLM.Office.WordAddin
                     return;
                 }
 
-                // Check if checked out
-                var doc = await _apiClient.GetDocumentAsync(objectId);
-                if (!doc.IsCheckedOut)
+                // Check if checked out (from document properties, not API)
+                var doc = Globals.ThisAddIn.Application.ActiveDocument;
+                var checkedOut = GetDocumentProperty(doc, "PLM_CheckedOut");
+                if (checkedOut != "true")
                 {
                     MessageBox.Show(
                         "Document must be checked out before you can save changes.\n\nPlease check out the document first.",
@@ -360,7 +455,7 @@ namespace FreePLM.Office.WordAddin
                 }
 
                 // Save the Word document
-                Globals.ThisAddIn.Application.ActiveDocument.Save();
+                doc.Save();
 
                 MessageBox.Show(
                     "Document saved locally.\n\nRemember to 'Check In' when you're done to create a new revision in PLM.",
@@ -374,16 +469,138 @@ namespace FreePLM.Office.WordAddin
             }
         }
 
-        public void SaveAsButton_Click(IRibbonControl control)
+        public async void SaveAsButton_Click(IRibbonControl control)
         {
-            MessageBox.Show(
-                "Save As: This will save the current document as a NEW PLM document with a new ObjectId.\n\n" +
-                "The original document will remain unchanged.\n\n" +
-                "You'll be prompted for: Group, Role, Project, and comment.\n\n" +
-                "Feature coming in backend implementation!",
-                "Save As New Document",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+            try
+            {
+                // Check if service is available
+                if (!await _apiClient.IsServiceAvailableAsync())
+                {
+                    MessageBox.Show(
+                        "Cannot connect to FreePLM service.\n\nPlease ensure the FreePLM service is running on localhost:5000",
+                        "Service Unavailable",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                    return;
+                }
+
+                // Get active document
+                var app = Globals.ThisAddIn.Application;
+                if (app.Documents.Count == 0)
+                {
+                    MessageBox.Show(
+                        "No document is currently open.",
+                        "No Document",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                    return;
+                }
+
+                var doc = app.ActiveDocument;
+                var currentFileName = doc.Name;
+
+                // Check if document has been saved (has a valid path)
+                string currentPath;
+                bool isNewDocument = false;
+
+                try
+                {
+                    currentPath = doc.FullName;
+                    // If FullName doesn't throw and doesn't start with "Document", it's been saved
+                    if (currentPath.StartsWith("Document") || !File.Exists(currentPath))
+                    {
+                        isNewDocument = true;
+                    }
+                }
+                catch
+                {
+                    isNewDocument = true;
+                    currentPath = null;
+                }
+
+                // If document hasn't been saved, save to temp location first
+                if (isNewDocument)
+                {
+                    var tempPath = Path.Combine(Path.GetTempPath(), $"PLM_Temp_{Guid.NewGuid()}.docx");
+                    doc.SaveAs2(tempPath);
+                    currentPath = tempPath;
+                }
+                else
+                {
+                    // Save any pending changes
+                    doc.Save();
+                }
+
+                // Check if document already has PLM properties
+                var existingObjectId = GetDocumentProperty(doc, "PLM_ObjectId");
+                if (!string.IsNullOrEmpty(existingObjectId))
+                {
+                    var dialogResult = MessageBox.Show(
+                        $"This document is already in PLM (ObjectId: {existingObjectId}).\n\n" +
+                        "Do you want to save it as a NEW document with a different ObjectId?\n\n" +
+                        "The original document will remain unchanged.",
+                        "Document Already in PLM",
+                        MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Question);
+
+                    if (dialogResult != DialogResult.Yes)
+                    {
+                        return;
+                    }
+                }
+
+                // Show UI and save to PLM
+                var result = await _apiClient.SaveAsUIAsync(currentPath, currentFileName);
+
+                if (result == null)
+                {
+                    // User cancelled in the UI
+                    return;
+                }
+
+                if (!result.Success)
+                {
+                    MessageBox.Show(
+                        $"Failed to save document to PLM:\n\n{result.Message}",
+                        "Error",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Error);
+                    return;
+                }
+
+                // Set PLM properties on the document
+                SetDocumentProperty(doc, "PLM_ObjectId", result.ObjectId);
+                SetDocumentProperty(doc, "PLM_Revision", result.Revision);
+                SetDocumentProperty(doc, "PLM_CheckedOut", "true");
+                SetDocumentProperty(doc, "PLM_Status", "Private");
+
+                // Save to temp location with new filename
+                var tempDir = Path.Combine(Path.GetTempPath(), "FreePLM", result.ObjectId);
+                Directory.CreateDirectory(tempDir);
+                var newFilePath = Path.Combine(tempDir, result.FileName);
+
+                doc.SaveAs2(newFilePath);
+
+                UpdateRibbonState();
+
+                MessageBox.Show(
+                    $"Document saved to PLM successfully!\n\n" +
+                    $"Object ID: {result.ObjectId}\n" +
+                    $"File Name: {result.FileName}\n" +
+                    $"Revision: {result.Revision}\n\n" +
+                    $"The document is checked out and ready for editing.",
+                    "Save As Successful",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    $"Error saving document to PLM:\n\n{ex.Message}",
+                    "Error",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
         }
 
         public async void GetLatestButton_Click(IRibbonControl control)
@@ -495,20 +712,38 @@ namespace FreePLM.Office.WordAddin
                 MessageBoxIcon.Information);
         }
 
-        public void SearchButton_Click(IRibbonControl control)
+        public async void SearchButton_Click(IRibbonControl control)
         {
-            MessageBox.Show(
-                "Search: Find documents in FreePLM by:\n" +
-                "- ObjectId or File Name\n" +
-                "- Project, Group, Role\n" +
-                "- Owner\n" +
-                "- Status\n" +
-                "- Date range\n\n" +
-                "Results will be displayed in a searchable grid.\n\n" +
-                "Feature coming in backend implementation!",
-                "Search Documents",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Information);
+            try
+            {
+                // Check if service is available
+                if (!await _apiClient.IsServiceAvailableAsync())
+                {
+                    MessageBox.Show(
+                        "Cannot connect to FreePLM service.\n\nPlease ensure the FreePLM service is running on localhost:5000",
+                        "Service Unavailable",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                    return;
+                }
+
+                // Show WPF search dialog via the service
+                var result = await _apiClient.SearchUIAsync();
+
+                if (result != null && !string.IsNullOrEmpty(result.ObjectId))
+                {
+                    // User selected a document to open
+                    await OpenDocumentFromPLM(result.ObjectId);
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    $"Error opening search dialog: {ex.Message}",
+                    "Error",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
         }
 
         public async void NewRevisionButton_Click(IRibbonControl control)
@@ -673,6 +908,73 @@ namespace FreePLM.Office.WordAddin
             form.CancelButton = cancelButton;
 
             return form.ShowDialog() == DialogResult.OK ? textBox.Text : null;
+        }
+
+        private async System.Threading.Tasks.Task OpenDocumentFromPLM(string objectId)
+        {
+            try
+            {
+                // Download document from PLM
+                var openResult = await _apiClient.OpenDocumentAsync(objectId);
+
+                // Save to temp location
+                var tempPath = Path.Combine(Path.GetTempPath(), "FreePLM", openResult.ObjectId);
+                Directory.CreateDirectory(tempPath);
+                var filePath = Path.Combine(tempPath, openResult.FileName);
+                File.WriteAllBytes(filePath, openResult.FileContent);
+
+                // Close current document if open
+                if (Globals.ThisAddIn.Application.Documents.Count > 0)
+                {
+                    var activeDoc = Globals.ThisAddIn.Application.ActiveDocument;
+                    var activeObjectId = GetDocumentProperty(activeDoc, "PLM_ObjectId");
+
+                    // Only close if it's a different document
+                    if (activeObjectId != openResult.ObjectId)
+                    {
+                        var result = MessageBox.Show(
+                            "Close the current document?",
+                            "Close Document",
+                            MessageBoxButtons.YesNo,
+                            MessageBoxIcon.Question);
+
+                        if (result == DialogResult.Yes)
+                        {
+                            activeDoc.Close(false);
+                        }
+                    }
+                }
+
+                // Open the file in Word
+                var wordDoc = Globals.ThisAddIn.Application.Documents.Open(filePath);
+
+                // Store PLM properties in document
+                SetDocumentProperty(wordDoc, "PLM_ObjectId", openResult.ObjectId);
+                SetDocumentProperty(wordDoc, "PLM_Revision", openResult.Revision);
+                SetDocumentProperty(wordDoc, "PLM_CheckedOut", openResult.IsCheckedOut ? "true" : "false");
+                SetDocumentProperty(wordDoc, "PLM_Status", openResult.Status.ToString());
+
+                // Update ribbon state
+                UpdateRibbonState();
+
+                MessageBox.Show(
+                    $"Document opened successfully!\n\n" +
+                    $"ObjectId: {openResult.ObjectId}\n" +
+                    $"Revision: {openResult.Revision}\n" +
+                    $"Status: {openResult.Status}\n" +
+                    $"Checked Out: {(openResult.IsCheckedOut ? $"Yes (by {openResult.CheckedOutBy})" : "No")}",
+                    "Document Opened",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    $"Error opening document from PLM: {ex.Message}",
+                    "Error",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
         }
 
         private DocumentStatus? ShowStatusTransitionDialog(DocumentStatus currentStatus)
