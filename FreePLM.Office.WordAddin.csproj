@@ -191,12 +191,16 @@
   <ItemGroup>
     <Compile Include="ApiClient\PLMApiClient.cs" />
     <Compile Include="ApiClient\PLMApiException.cs" />
+    <Compile Include="Applications\IPLMApplication.cs" />
+    <Compile Include="Applications\WordPLMApplication.cs" />
+    <Compile Include="Helpers\DatFileHelper.cs" />
     <Compile Include="Models\ApiErrorResponse.cs" />
     <Compile Include="Models\CheckInDto.cs" />
     <Compile Include="Models\CheckInResultDto.cs" />
     <Compile Include="Models\CheckOutDto.cs" />
     <Compile Include="Models\CheckOutResultDto.cs" />
     <Compile Include="Models\CreateDocumentResultDto.cs" />
+    <Compile Include="Models\DatFileSidecar.cs" />
     <Compile Include="Models\DocumentCreateDto.cs" />
     <Compile Include="Models\DocumentReadDto.cs" />
     <Compile Include="Models\DocumentSearchResponse.cs" />

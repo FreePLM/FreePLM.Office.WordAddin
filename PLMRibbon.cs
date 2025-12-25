@@ -5,6 +5,7 @@ using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
 using FreePLM.Office.WordAddin.ApiClient;
+using FreePLM.Office.WordAddin.Helpers;
 using FreePLM.Office.WordAddin.Models;
 using Microsoft.Office.Core;
 using Word = Microsoft.Office.Interop.Word;
@@ -54,11 +55,21 @@ namespace FreePLM.Office.WordAddin
         {
             try
             {
+                var datFile = GetDatFileForActiveDocument();
+                if (datFile != null)
+                {
+                    return $"Rev: {datFile.CurrentRevision}";
+                }
+
+                // Fallback to custom properties (for backwards compatibility)
                 if (Globals.ThisAddIn.Application.Documents.Count > 0)
                 {
                     var doc = Globals.ThisAddIn.Application.ActiveDocument;
                     var revision = GetDocumentProperty(doc, "PLM_Revision");
-                    return string.IsNullOrEmpty(revision) ? "Revision: --" : $"Rev: {revision}";
+                    if (!string.IsNullOrEmpty(revision))
+                    {
+                        return $"Rev: {revision}";
+                    }
                 }
             }
             catch { }
@@ -69,11 +80,21 @@ namespace FreePLM.Office.WordAddin
         {
             try
             {
+                var datFile = GetDatFileForActiveDocument();
+                if (datFile != null)
+                {
+                    return $"Status: {datFile.Status}";
+                }
+
+                // Fallback to custom properties (for backwards compatibility)
                 if (Globals.ThisAddIn.Application.Documents.Count > 0)
                 {
                     var doc = Globals.ThisAddIn.Application.ActiveDocument;
                     var status = GetDocumentProperty(doc, "PLM_Status");
-                    return string.IsNullOrEmpty(status) ? "Status: --" : $"Status: {status}";
+                    if (!string.IsNullOrEmpty(status))
+                    {
+                        return $"Status: {status}";
+                    }
                 }
             }
             catch { }
@@ -84,6 +105,20 @@ namespace FreePLM.Office.WordAddin
         {
             try
             {
+                var datFile = GetDatFileForActiveDocument();
+                if (datFile != null)
+                {
+                    if (datFile.IsCheckedOut)
+                    {
+                        return "✓ Checked Out";
+                    }
+                    else
+                    {
+                        return "✗ Read Only";
+                    }
+                }
+
+                // Fallback to custom properties (for backwards compatibility)
                 if (Globals.ThisAddIn.Application.Documents.Count > 0)
                 {
                     var doc = Globals.ThisAddIn.Application.ActiveDocument;
@@ -170,6 +205,9 @@ namespace FreePLM.Office.WordAddin
                     // Now save checked-out file to temp location
                     File.WriteAllBytes(filePath, fileBytes);
 
+                    // Create .dat sidecar file (file is checked out)
+                    CreateDatFile(filePath, docInfo, isCheckedOut: true);
+
                     // Open the checked out file in Word
                     var wordDoc = Globals.ThisAddIn.Application.Documents.Open(filePath);
 
@@ -252,36 +290,58 @@ namespace FreePLM.Office.WordAddin
                 if (!isInTempLocation)
                 {
                     // Need to copy to temp location
-                    doc.Close(false);
                     File.Copy(originalPath, tempFilePath, true);
                 }
-                else
-                {
-                    // File is already in temp location, but we need to close it so the dialog can read it
-                    doc.Close(false);
-                }
 
-                // Call the new UI-enabled API endpoint (document is now closed)
+                // Call the WPF UI-enabled API endpoint (shows dialog with comment + close option)
                 var result = await _apiClient.CheckInUIAsync(objectId, fileName, currentRevision);
 
                 if (result == null)
                 {
-                    // User cancelled in the UI - reopen the document
-                    Globals.ThisAddIn.Application.Documents.Open(tempFilePath);
+                    // User cancelled in the WPF check-in dialog
                     return;
                 }
 
                 if (result.Success)
                 {
+                    // Update the .dat file to reflect checked-in status
+                    var directory = Path.GetDirectoryName(originalPath);
+                    var datFile = DatFileHelper.ReadDatFile(directory, objectId);
+                    if (datFile != null)
+                    {
+                        datFile.IsCheckedOut = false;
+                        datFile.CheckedOutBy = null;
+                        datFile.CheckedOutDate = null;
+                        datFile.CurrentRevision = result.NewRevision;
+                        datFile.LastSyncDate = DateTime.UtcNow;
+                        DatFileHelper.WriteDatFile(directory, datFile);
+                    }
+
                     UpdateRibbonState();
 
-                    MessageBox.Show(
-                        $"Document checked in successfully!\n\nNew Revision: {result.NewRevision}\nPrevious: {result.PreviousRevision}",
-                        "Check In Successful",
-                        MessageBoxButtons.OK,
-                        MessageBoxIcon.Information);
+                    // Close document if user requested it in the WPF dialog
+                    if (result.CloseAfterCheckIn)
+                    {
+                        doc.Close(false);
 
-                    // Document is now checked in and stays closed
+                        MessageBox.Show(
+                            $"Document checked in successfully!\n\nNew Revision: {result.NewRevision}\nPrevious: {result.PreviousRevision}\n\nDocument has been closed.",
+                            "Check In Successful",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Information);
+                    }
+                    else
+                    {
+                        // Update custom properties to reflect new status
+                        SetDocumentProperty(doc, "PLM_Revision", result.NewRevision);
+                        SetDocumentProperty(doc, "PLM_CheckedOut", "false");
+
+                        MessageBox.Show(
+                            $"Document checked in successfully!\n\nNew Revision: {result.NewRevision}\nPrevious: {result.PreviousRevision}\n\nDocument remains open (read-only).",
+                            "Check In Successful",
+                            MessageBoxButtons.OK,
+                            MessageBoxIcon.Information);
+                    }
                 }
             }
             catch (PLMApiException ex)
@@ -432,6 +492,9 @@ namespace FreePLM.Office.WordAddin
                 var filePath = Path.Combine(tempDir, result.FileName);
 
                 doc.SaveAs2(filePath);
+
+                // Create .dat sidecar file (new document is checked out)
+                CreateDatFile(filePath, result.ObjectId, result.FileName, result.Revision, isCheckedOut: true);
 
                 UpdateRibbonState();
 
@@ -901,10 +964,51 @@ namespace FreePLM.Office.WordAddin
                 if (Globals.ThisAddIn.Application.Documents.Count > 0)
                 {
                     var doc = Globals.ThisAddIn.Application.ActiveDocument;
+
+                    // First try to find .dat file by scanning directory
+                    var filePath = doc.FullName;
+                    var objectId = DatFileHelper.FindObjectIdByFilePath(filePath);
+
+                    if (!string.IsNullOrEmpty(objectId))
+                    {
+                        return objectId;
+                    }
+
+                    // Fallback to custom properties (for backwards compatibility)
                     return GetDocumentProperty(doc, "PLM_ObjectId");
                 }
             }
             catch { }
+            return null;
+        }
+
+        /// <summary>
+        /// Get the .dat sidecar file for the active document
+        /// </summary>
+        private DatFileSidecar GetDatFileForActiveDocument()
+        {
+            try
+            {
+                if (Globals.ThisAddIn.Application.Documents.Count > 0)
+                {
+                    var doc = Globals.ThisAddIn.Application.ActiveDocument;
+                    var filePath = doc.FullName;
+                    var directory = Path.GetDirectoryName(filePath);
+
+                    // Find ObjectId
+                    var objectId = DatFileHelper.FindObjectIdByFilePath(filePath);
+
+                    if (!string.IsNullOrEmpty(objectId))
+                    {
+                        return DatFileHelper.ReadDatFile(directory, objectId);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error reading .dat file: {ex.Message}");
+            }
+
             return null;
         }
 
@@ -937,6 +1041,87 @@ namespace FreePLM.Office.WordAddin
                     Microsoft.Office.Core.MsoDocProperties.msoPropertyTypeString, value);
             }
             catch { }
+        }
+
+        /// <summary>
+        /// Create a .dat sidecar file for a PLM-managed file
+        /// </summary>
+        private void CreateDatFile(string filePath, DocumentReadDto docInfo, bool isCheckedOut = false)
+        {
+            try
+            {
+                var directory = Path.GetDirectoryName(filePath);
+                if (string.IsNullOrWhiteSpace(directory))
+                {
+                    return;
+                }
+
+                var fileExtension = Path.GetExtension(docInfo.FileName);
+
+                var sidecar = new DatFileSidecar
+                {
+                    ObjectId = docInfo.ObjectId,
+                    FileName = docInfo.FileName,
+                    FileExtension = fileExtension,
+                    CurrentRevision = docInfo.CurrentRevision,
+                    Status = docInfo.Status.ToString(),
+                    Owner = docInfo.Owner,
+                    IsCheckedOut = isCheckedOut,
+                    CheckedOutBy = isCheckedOut ? docInfo.CheckedOutBy : null,
+                    CheckedOutDate = isCheckedOut ? docInfo.CheckedOutDate : null,
+                    MachineName = isCheckedOut ? Environment.MachineName : null,
+                    LastSyncDate = DateTime.UtcNow,
+                    VaultPath = $"Vault\\{docInfo.ObjectId}",
+                    Project = docInfo.Project,
+                    Group = docInfo.Group,
+                    Role = docInfo.Role
+                };
+
+                DatFileHelper.WriteDatFile(directory, sidecar);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error creating .dat file: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Create a .dat sidecar file for a newly created PLM document
+        /// </summary>
+        private void CreateDatFile(string filePath, string objectId, string fileName, string revision, bool isCheckedOut = false)
+        {
+            try
+            {
+                var directory = Path.GetDirectoryName(filePath);
+                if (string.IsNullOrWhiteSpace(directory))
+                {
+                    return;
+                }
+
+                var fileExtension = Path.GetExtension(fileName);
+
+                var sidecar = new DatFileSidecar
+                {
+                    ObjectId = objectId,
+                    FileName = fileName,
+                    FileExtension = fileExtension,
+                    CurrentRevision = revision,
+                    Status = "Private",
+                    Owner = Environment.UserName,
+                    IsCheckedOut = isCheckedOut,
+                    CheckedOutBy = isCheckedOut ? Environment.UserName : null,
+                    CheckedOutDate = isCheckedOut ? (DateTime?)DateTime.UtcNow : null,
+                    MachineName = isCheckedOut ? Environment.MachineName : null,
+                    LastSyncDate = DateTime.UtcNow,
+                    VaultPath = $"Vault\\{objectId}"
+                };
+
+                DatFileHelper.WriteDatFile(directory, sidecar);
+            }
+            catch (Exception ex)
+            {
+                System.Diagnostics.Debug.WriteLine($"Error creating .dat file: {ex.Message}");
+            }
         }
 
         private string PromptForObjectId()
@@ -983,6 +1168,69 @@ namespace FreePLM.Office.WordAddin
             return form.ShowDialog() == DialogResult.OK ? textBox.Text : null;
         }
 
+        private bool? ShowCloseAfterCheckInDialog()
+        {
+            var form = new Form
+            {
+                Text = "Check In Document",
+                Width = 420,
+                Height = 180,
+                StartPosition = FormStartPosition.CenterScreen,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                MaximizeBox = false,
+                MinimizeBox = false
+            };
+
+            var label = new Label
+            {
+                Text = "The document will be checked in and marked as read-only.\n\nWhat would you like to do after check-in?",
+                Left = 20,
+                Top = 20,
+                Width = 370,
+                Height = 50
+            };
+
+            var checkBox = new CheckBox
+            {
+                Text = "Close document after check-in",
+                Left = 20,
+                Top = 80,
+                Width = 250,
+                Checked = false  // Default: keep document open
+            };
+
+            var okButton = new Button
+            {
+                Text = "Check In",
+                Left = 210,
+                Top = 110,
+                Width = 90,
+                DialogResult = DialogResult.OK
+            };
+
+            var cancelButton = new Button
+            {
+                Text = "Cancel",
+                Left = 310,
+                Top = 110,
+                Width = 75,
+                DialogResult = DialogResult.Cancel
+            };
+
+            form.Controls.AddRange(new Control[] { label, checkBox, okButton, cancelButton });
+            form.AcceptButton = okButton;
+            form.CancelButton = cancelButton;
+
+            var result = form.ShowDialog();
+
+            if (result == DialogResult.OK)
+            {
+                return checkBox.Checked;
+            }
+
+            return null; // User cancelled
+        }
+
         private async System.Threading.Tasks.Task OpenDocumentFromPLM(string objectId)
         {
             try
@@ -995,6 +1243,12 @@ namespace FreePLM.Office.WordAddin
                 Directory.CreateDirectory(tempPath);
                 var filePath = Path.Combine(tempPath, openResult.FileName);
                 File.WriteAllBytes(filePath, openResult.FileContent);
+
+                // Get full document info for .dat file creation
+                var docInfo = await _apiClient.GetDocumentAsync(openResult.ObjectId);
+
+                // Create .dat sidecar file (file may or may not be checked out)
+                CreateDatFile(filePath, docInfo, isCheckedOut: openResult.IsCheckedOut);
 
                 // Check if this document is already open
                 bool alreadyOpen = false;

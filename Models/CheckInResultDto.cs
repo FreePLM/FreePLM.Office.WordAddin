@@ -13,5 +13,6 @@ namespace FreePLM.Office.WordAddin.Models
         public string PreviousRevision { get; set; }
         public DateTime CheckedInDate { get; set; }
         public string Message { get; set; }
+        public bool CloseAfterCheckIn { get; set; }
     }
 }
